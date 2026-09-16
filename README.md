@@ -57,6 +57,8 @@ Broadcast a probe from an initiator node:
 sudo ./sldp eth0 192.168.1.10 probe
 ```
 
+Wireshark Dissector: A Lua dissector (dissector.lua) is included in this repository. To use it, copy the file to your Wireshark plugin folder to inspect SLDP frames on your network.
+
 Security Architecture
 
 For security, the CLL (Cryptographic Link Layer) Trust Oracle Protocol v2.2 will be used as a blueprint. This ensures the Layer-2 discovery process is secured against address spoofing and manipulation during the commissioning phase.
