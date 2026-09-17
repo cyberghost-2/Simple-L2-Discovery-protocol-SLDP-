@@ -40,8 +40,6 @@ excluding FCS).
   (`0x04` = IPv4, `0x06` = IPv6). IPv4 addresses occupy the first 4 bytes of
   the slot; the remaining 12 are zero. This replaces IPv4-mapped IPv6 encoding
   with a deterministic, future-proof layout.
-- **Wire format:** Version, Message Type, Origin MAC, Src Type, Src IP,
-  Tgt Type, Tgt IP, and 4 reserved bytes — 46 bytes total.
 
 ### Wire format (60-byte frame)
 
@@ -59,56 +57,55 @@ excluding FCS).
 | 55 | 1  | Message Type (`0x01` probe, `0x02` response) |
 | 56 | 4  | Reserved |
 
+### State machine
+
+**Initiator (probe mode):**
+
+| From | Event | Action | To |
+|------|-------|--------|----|
+| `IDLE` | Operator invokes probe | Build and broadcast probe; start timeout | `PROBE_SENT` |
+| `PROBE_SENT` | Valid response received | Log tuple; hand to orchestration layer | `BOUND` |
+| `PROBE_SENT` | Timeout, retries remain | Rebroadcast probe; reset timeout | `PROBE_SENT` |
+| `PROBE_SENT` | Timeout, retries exhausted | Report failure | `SHUTDOWN` |
+| Any | `SIGINT` / `SIGTERM` | Cease transmissions | `SHUTDOWN` |
+
+**Responder (listen mode):**
+
+| From | Event | Action | To |
+|------|-------|--------|----|
+| `IDLE` | Operator invokes listen | Open `AF_PACKET` socket | `LISTENING` |
+| `LISTENING` | Probe received | Duplicate check; build response; unicast to sender | `LISTENING` |
+| `LISTENING` | Duplicate probe within `T_recent` | Silently drop | `LISTENING` |
+| `LISTENING` | `SIGINT` / `SIGTERM` | Cease transmissions | `SHUTDOWN` |
+
+### Timers and operational parameters
+
+| Parameter | Default | Notes |
+|-----------|--------:|-------|
+| Probe retry count | 3 | Total transmissions before giving up |
+| Probe timeout | 2000 ms | Wait per attempt; sized for Wi-Fi broadcast |
+| Duplicate suppression window | 5 s | Probes from the same MAC within this window are dropped |
+| Duplicate suppression cache | 32 entries | LRU eviction on overflow |
+| Listener poll interval | 1000 ms | Wake-up interval for graceful shutdown checks |
+
 ## Transport: IEEE 802 Networks
 
 SLDP operates over any IEEE 802 link that carries Ethernet II frames with
-arbitrary EtherType values. This makes it transport-agnostic across the common
-Layer 2 media used in brownfield, industrial, and tactical environments.
+arbitrary EtherType values. On wired Ethernet (IEEE 802.3) this is transparent
+and is the primary deployment target for industrial, OT, and data-center use.
 
-### Supported transports
+On Wi-Fi (IEEE 802.11), SLDP works in managed mode provided client isolation
+is disabled and the AP passes unknown EtherTypes. It also works natively in
+IBSS, 802.11s mesh, and Wi-Fi Direct, where no AP filters traffic — these modes
+are the preferred fit for disaster recovery, tactical, and swarm scenarios.
+SLDP does not operate before Layer 2 association; "pre-IP" refers to the IP
+stack, not the link layer.
 
-| Medium | Standard | SLDP support | Notes |
-|---|---|:---:|---|
-| Wired Ethernet | IEEE 802.3 | ✅ Native | Primary target for industrial, OT, and data-center use |
-| Wi-Fi infrastructure | IEEE 802.11 (managed) | ✅ With constraints | Requires client isolation disabled; AP must pass unknown EtherTypes |
-| Wi-Fi ad-hoc | IEEE 802.11 (IBSS) | ✅ Native | No AP filtering; preferred for disaster recovery and tactical use |
-| Wi-Fi mesh | IEEE 802.11s | ✅ | Frames forwarded across mesh; EtherType must be permitted |
-| Wi-Fi Direct | Wi-Fi P2P | ✅ | Direct station-to-station; useful for autonomous swarms |
-| AP mode | IEEE 802.11 (hostapd) | ✅ | AP may run SLDP directly or proxy for its clients |
-
-### Constraints on 802.11
-
-Three conditions must hold for SLDP to function on Wi-Fi:
-
-1. **Association first.** SLDP is pre-IP, not pre-association. Both endpoints
-   must be associated to the same BSS (or in IBSS / mesh / Wi-Fi Direct) before
-   any SLDP frame can be transmitted.
-2. **Client isolation disabled.** Enterprise and guest SSIDs often block
-   station-to-station traffic at the AP. SLDP probes will transmit but no
-   response will arrive. This is the most common Wi-Fi failure mode.
-3. **EtherType pass-through.** Some managed APs and drivers filter EtherTypes
-   they do not recognize. `0x88B5` (local / experimental) is generally passed,
-   but strict deployments may drop it.
-
-### Performance notes
-
-- **Broadcast rate.** Wi-Fi broadcast frames are sent at the lowest basic rate
-  and are neither acknowledged nor retransmitted. SLDP's default probe timeout
-  of 2000 ms is sized for this.
-- **Power save.** Stations in power-save mode buffer frames at the AP and wake
-  on DTIM beacons. Response latency can reach hundreds of milliseconds.
-- **XDP fast path.** Native XDP is not available on most 802.11 drivers. On
-  Wi-Fi, SLDP bindings are consumed by the kernel forwarding path or a local
-  userspace daemon rather than an XDP-native translator. The XDP claim in the
-  specification applies to wired Ethernet access ports.
-
-### Recommended deployment modes
-
-- **Industrial / OT / data center:** wired Ethernet — the primary target.
-- **Disaster recovery / tactical field networks:** 802.11 IBSS or Wi-Fi Direct.
-- **Autonomous swarms:** Wi-Fi Direct or 802.11s mesh.
-- **Enterprise Wi-Fi:** supported only where client isolation is disabled and
-  EtherType filtering is permissive.
+Two caveats apply on Wi-Fi. First, broadcast frames are sent at the lowest
+basic rate and are neither acknowledged nor retransmitted, which is why SLDP's
+default probe timeout is 2000 ms. Second, native XDP is unavailable on most
+802.11 drivers, so SLDP bindings on Wi-Fi are consumed by the kernel forwarding
+path or a local userspace daemon rather than an XDP-native translator.
 
 ## Comparison with Existing Protocols
 
@@ -136,7 +133,7 @@ Primary deployment scenarios include:
 - Substation and power-grid retrofits
 
 In these environments, SLDP feeds newly discovered MAC-to-IP relationships
-directly into higher-level translation systems such as NAT64 gateways, Proxy
+directly into higher-level translation systems such as NAT64 gateways, proxy
 ARP nodes, or orchestration tools like Ansible, Terraform, and Kubernetes.
 
 ## Usage & Compilation
@@ -180,5 +177,5 @@ basic duplicate suppression. These are planned for a subsequent revision.
 
 License
 
-MIT License
+MIT License 
 
